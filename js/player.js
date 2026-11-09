@@ -4,6 +4,7 @@ import { ClientLink, normalizeRoom } from './net.js';
 import { chipStack, esc, fmt, keepAwake, load, signed, store, toast } from './ui.js';
 
 const HELP_MS = 12000;
+const ACK_TIMEOUT_MS = 4000;
 const FLASH_MS = 800;
 const FEED_LENGTH = 4;
 
@@ -106,9 +107,17 @@ function sendAction(action) {
     toast('연결이 끊겨 있어요. 잠시 후 다시 눌러 주세요');
     return;
   }
-  sentSeq = view.seq;
-  link.send({ t: 'act', seq: view.seq, action });
+  const seq = view.seq;
+  sentSeq = seq;
+  link.send({ t: 'act', seq, action });
   render();
+  // 전송이 유실되면 다시 누를 수 있게 잠금을 푼다. 중복 입력은 관리자가 순번으로 거른다.
+  setTimeout(() => {
+    if (sentSeq === seq) {
+      sentSeq = null;
+      render();
+    }
+  }, ACK_TIMEOUT_MS);
 }
 
 const dock = createDock({ sheet, getLegal: () => view.legal, send: sendAction, rerender: render });
@@ -132,8 +141,8 @@ document.addEventListener('click', (event) => {
 const STATUS_TEXT = { online: '연결됨', connecting: '연결 중…', searching: '테이블을 찾는 중…' };
 const HELP_HTML = `<ul class="help">
   <li>관리자 화면이 켜져 있는지 확인해 주세요.</li>
-  <li>관리자와 같은 와이파이에 연결하면 가장 안정적입니다.</li>
   <li>방 코드가 맞는지 확인해 주세요.</li>
+  <li>휴대폰의 인터넷 연결을 확인해 주세요.</li>
 </ul>`;
 
 function renderJoin() {

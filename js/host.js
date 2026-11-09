@@ -304,7 +304,6 @@ function renderTable() {
 const STATUS_TEXT = {
   online: ['연결됨', 'on'],
   connecting: ['연결 중…', 'wait'],
-  taken: ['이 코드는 사용 중입니다. 새 테이블을 여세요', 'bad'],
 };
 
 function proxyButtons(h) {
