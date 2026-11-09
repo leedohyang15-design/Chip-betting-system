@@ -1,4 +1,6 @@
+import { createDock } from './dock.js';
 import * as E from './engine.js';
+import * as fx from './fx.js';
 import { HostLink, normalizeRoom } from './net.js';
 import { chipStack, esc, fmt, keepAwake, load, roomKey, signed, store, toast } from './ui.js';
 
@@ -21,12 +23,33 @@ if (!saved) {
 }
 
 let game = saved.game;
+game.actionSeq ??= game.seq ?? 0;
+game.departed ??= [];
 const tokens = saved.tokens;
 const history = saved.history ?? [];
 const conns = new Map();
+let hostSeatId = saved.hostSeatId ?? null;
 let netStatus = 'connecting';
 let picks = { key: '', pots: {} };
 let dealtCards = 0;
+let prevHand;
+let wasMyTurn = false;
+
+const portrait = matchMedia('(orientation: portrait)');
+portrait.addEventListener('change', () => render());
+
+const mySeat = () => {
+  const p = E.playerOf(game, hostSeatId);
+  return p && !p.leaving ? p : null;
+};
+const isOnline = (id) => id === hostSeatId || conns.has(id);
+
+const dock = createDock({
+  sheet: document.getElementById('sheet'),
+  getLegal: () => E.legal(game, hostSeatId),
+  send: (action) => mutate((g) => E.act(g, hostSeatId, action)),
+  rerender: () => renderSide(),
+});
 
 const joinUrl = new URL(`play.html?room=${room}`, location.href).href;
 const qrSvg = (() => {
@@ -39,18 +62,18 @@ const qrSvg = (() => {
 /* 상태 저장과 전파 */
 
 function persist() {
-  store(roomKey(room), JSON.stringify({ game, tokens, history }));
+  store(roomKey(room), JSON.stringify({ game, tokens, history, hostSeatId }));
 }
 
 function viewFor(id) {
   return {
     room,
     config: game.config,
-    players: game.players.map((p) => ({ ...p, connected: conns.has(p.id) })),
+    players: game.players.map((p) => ({ ...p, connected: isOnline(p.id) })),
     hand: game.hand,
     handNo: game.handNo,
     dealerId: game.dealerId,
-    seq: game.seq,
+    seq: game.actionSeq,
     log: game.log.slice(-8),
     you: id,
     legal: E.legal(game, id),
@@ -92,9 +115,10 @@ function undo() {
     if (!snapshot.players.some((x) => x.id === p.id)) snapshot.players.push({ ...p });
   }
   snapshot.nextPlayerId = game.nextPlayerId;
-  snapshot.seq = game.seq + 1;
+  snapshot.actionSeq = game.actionSeq + 1;
   snapshot.log.push({ hand: snapshot.handNo, text: '↩ 되돌리기' });
   game = snapshot;
+  prevHand = undefined;
   commit();
 }
 
@@ -136,7 +160,7 @@ function handleAction(conn, msg) {
     link.send(conn, { t: 'reject', message });
     link.send(conn, { t: 'state', view: viewFor(id) });
   };
-  if (msg.seq !== game.seq) {
+  if (msg.seq !== game.actionSeq) {
     reject('상황이 바뀌었어요. 다시 눌러 주세요');
     return;
   }
@@ -167,6 +191,11 @@ const link = new HostLink(room, {
 const toRad = (deg) => (deg * Math.PI) / 180;
 const place = (angle, rx, ry) =>
   `left:${(50 + rx * Math.cos(toRad(angle))).toFixed(2)}%;top:${(50 + ry * Math.sin(toRad(angle))).toFixed(2)}%`;
+const RADII = {
+  wide: { seat: [45, 43], bet: [28, 25], dealer: [33, 30] },
+  tall: { seat: [39, 44], bet: [23, 31], dealer: [27, 36] },
+};
+const radii = () => (portrait.matches ? RADII.tall : RADII.wide);
 
 function winnersOf(h) {
   const totals = {};
@@ -195,7 +224,8 @@ function seatHtml(g, h, p, angle, won) {
   if (s?.folded) classes.push('folded');
   if (s?.allIn && !s.folded) classes.push('allin');
   if (h?.toAct === p.id) classes.push('turn');
-  if (!conns.has(p.id)) classes.push('offline');
+  if (!isOnline(p.id)) classes.push('offline');
+  if (p.id === hostSeatId) classes.push('mine');
   if (p.sitOut) classes.push('sitout');
   if (won[p.id]) classes.push('winner');
 
@@ -205,7 +235,7 @@ function seatHtml(g, h, p, angle, won) {
   else if (s?.last && h.phase !== 'done') tag = s.last;
   const cards = s && !s.folded && h.phase !== 'done' ? '<span class="minis"><i></i><i></i></span>' : '';
 
-  return `<button class="${classes.join(' ')}" style="${place(angle, 45, 43)}" data-cmd="seat" data-id="${p.id}">
+  return `<button class="${classes.join(' ')}" style="${place(angle, ...radii().seat)}" data-cmd="seat" data-id="${p.id}">
     ${cards}
     <span class="seat-name"><i class="dot"></i>${esc(p.name)}${badgeFor(g, h, p)}</span>
     <span class="seat-chips">${fmt(p.chips)}</span>
@@ -221,6 +251,7 @@ function centerHtml(g, h, lobby) {
         <p class="lobby-label">스캔하거나 코드 입력</p>
         <p class="lobby-code">${room}</p>
         <p class="lobby-count">${g.players.length}명 입장${g.config.mode === 'seotda' ? ' · 섯다' : ' · 텍사스 홀덤'}</p>
+        <button class="btn small lobby-share" data-cmd="share">링크 공유</button>
       </div>
     </div>`;
   }
@@ -257,10 +288,10 @@ function renderTable() {
     let extra = '';
     const bet = h?.seats[p.id]?.bet ?? 0;
     if (bet > 0 && h.phase === 'betting') {
-      extra += `<div class="bet" style="${place(angle, 28, 25)}">${chipStack(bet)}<b>${fmt(bet)}</b></div>`;
+      extra += `<div class="bet" data-id="${p.id}" style="${place(angle, ...radii().bet)}">${chipStack(bet)}<b>${fmt(bet)}</b></div>`;
     }
     if (h && h.mode === 'holdem' && g.dealerId === p.id) {
-      extra += `<div class="dealer" style="${place(angle + 13, 33, 30)}">D</div>`;
+      extra += `<div class="dealer" style="${place(angle + 13, ...radii().dealer)}">D</div>`;
     }
     return seatHtml(g, h, p, angle, won) + extra;
   });
@@ -293,8 +324,7 @@ function proxyButtons(h) {
 }
 
 function stagePicks(h) {
-  const key = `${h.no}:${game.seq}:${h.pots.filter((pot) => pot.winners).length}`;
-  if (picks.key.split(':')[0] !== String(h.no)) picks = { key, pots: {} };
+  if (picks.key !== h.no) picks = { key: h.no, pots: {} };
   return picks.pots;
 }
 
@@ -340,16 +370,21 @@ function idleHtml(g, h) {
     ${summary}
     <button class="btn primary wide big" data-cmd="start" ${ready < 2 ? 'disabled' : ''}>
       ${g.handNo === 0 ? '첫 판 시작' : '다음 판 시작'}</button>
-    ${ready < 2 ? '<p class="hint">칩이 있는 플레이어가 2명 이상 필요합니다.</p>' : ''}`;
+    ${mySeat() ? '' : '<button class="btn wide" data-cmd="sit">나도 앉기</button>'}
+    ${ready < 2 ? '<p class="hint">칩이 있는 플레이어가 2명 이상 필요합니다.</p>' : ''}
+    ${g.handNo === 0 ? '<p class="hint warn">이 화면을 끄거나 다른 앱으로 넘어가면 게임이 멈춥니다.</p>' : ''}`;
 }
 
 function bettingHtml(h) {
   const actor = E.playerOf(game, h.toAct);
   const la = E.legal(game, h.toAct);
   const need = la.canCheck ? '체크 가능' : `콜 ${fmt(la.call)}`;
+  if (h.toAct === hostSeatId) {
+    return `<p class="dock-title">내 차례 · ${need}</p>${dock.buttons(la, h.mode, false)}`;
+  }
   return `<h2><em>${esc(actor.name)}</em> 차례</h2>
     <p class="hint">${need} · 남은 칩 ${fmt(la.chips)}</p>
-    <details class="proxy" ${conns.has(h.toAct) ? '' : 'open'}>
+    <details class="proxy" ${isOnline(h.toAct) ? '' : 'open'}>
       <summary>대신 입력하기</summary>
       <div class="proxy-grid">${proxyButtons(h)}</div>
     </details>`;
@@ -372,6 +407,8 @@ function renderSide() {
       <button class="code" data-cmd="qr" title="QR 크게 보기">${room}</button>
       <span class="net ${statusCls}"><i class="dot"></i>${statusText}</span>
       <div class="side-tools">
+        <button class="btn small" data-cmd="mute" aria-label="${fx.isMuted() ? '소리 켜기' : '소리 끄기'}">${fx.isMuted() ? '🔇' : '🔊'}</button>
+        <button class="btn small only-compact" data-cmd="log">기록</button>
         <button class="btn small" data-cmd="settle">정산</button>
         <button class="btn small" data-cmd="settings" ${inHand ? 'disabled' : ''}>설정</button>
       </div>
@@ -384,8 +421,19 @@ function renderSide() {
     <section class="panel log"><h3>기록</h3><ol>${log}</ol></section>`;
 }
 
+function announceMyTurn() {
+  const myTurn = Boolean(hostSeatId) && game.hand?.toAct === hostSeatId;
+  if (myTurn && !wasMyTurn) fx.sound.turn();
+  if (!myTurn) dock.close();
+  wasMyTurn = myTurn;
+}
+
 function render() {
+  const before = fx.capture(tableEl);
   renderTable();
+  fx.play(tableEl, before, prevHand, game.hand);
+  prevHand = game.hand ? JSON.parse(JSON.stringify(game.hand)) : null;
+  announceMyTurn();
   const details = sideEl.querySelector('details.proxy');
   const proxyOpen = details?.open;
   renderSide();
@@ -403,7 +451,11 @@ function openDialog(html) {
 function seatDialog(id) {
   const p = E.playerOf(game, id);
   if (!p) return;
-  const status = conns.has(id) ? '접속 중' : '접속 끊김';
+  const status = id === hostSeatId ? '이 기기' : conns.has(id) ? '접속 중' : '접속 끊김';
+  const others = game.players
+    .filter((x) => x.id !== id)
+    .map((x) => `<option value="${x.id}">${esc(x.name)}</option>`)
+    .join('');
   openDialog(`<h2>${esc(p.name)}</h2>
     <p class="hint">${status} · 칩 ${fmt(p.chips)} · 총 바이인 ${fmt(p.buyIn)}</p>
     <label class="field"><span>리바이</span>
@@ -412,6 +464,10 @@ function seatDialog(id) {
     <label class="field"><span>칩 직접 수정</span>
       <span class="inline"><input id="setchips" type="number" min="0" inputmode="numeric" value="${p.chips}">
       <button class="btn" data-cmd="setchips" data-id="${id}">적용</button></span></label>
+    ${others ? `<div class="field stacked"><span>다른 사람에게 칩 이동</span>
+      <span class="inline"><select id="transfer-to" aria-label="받을 사람">${others}</select>
+      <input id="transfer" type="number" min="1" inputmode="numeric" placeholder="금액" aria-label="옮길 금액">
+      <button class="btn" data-cmd="transfer" data-id="${id}">이동</button></span></div>` : ''}
     <div class="dialog-row">
       <button class="btn" data-cmd="sitout" data-id="${id}">${p.sitOut ? '복귀' : '자리비움'}</button>
       <button class="btn danger" data-cmd="kick" data-id="${id}">내보내기</button>
@@ -421,11 +477,9 @@ function seatDialog(id) {
 
 function settleDialog() {
   const inHand = game.hand && game.hand.phase !== 'done';
-  const rows = [...game.players]
-    .map((p) => ({ p, net: p.chips - p.buyIn }))
-    .sort((a, b) => b.net - a.net)
+  const rows = E.settlement(game)
     .map(
-      ({ p, net }) => `<tr><td>${esc(p.name)}</td><td>${fmt(p.buyIn)}</td><td>${fmt(p.chips)}</td>
+      ({ name, buyIn, chips, net, left }) => `<tr class="${left ? 'left' : ''}"><td>${esc(name)}${left ? ' (퇴장)' : ''}</td><td>${fmt(buyIn)}</td><td>${fmt(chips)}</td>
         <td class="${net > 0 ? 'plus' : net < 0 ? 'minus' : ''}">${signed(net)}</td></tr>`,
     )
     .join('');
@@ -476,8 +530,57 @@ function rematchDialog() {
 
 const amountOf = (selector) => Math.floor(Number(document.querySelector(selector).value));
 
+async function shareLink() {
+  const shareData = { title: '칩 베팅 테이블', text: `방 코드 ${room}`, url: joinUrl };
+  try {
+    if (navigator.share) {
+      await navigator.share(shareData);
+    } else {
+      await navigator.clipboard.writeText(joinUrl);
+      toast('링크를 복사했습니다');
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') toast(joinUrl);
+  }
+}
+
+function sitDown() {
+  const name = document.getElementById('sit-name').value;
+  if (game.players.length >= E.MAX_SEATS) {
+    toast('자리가 모두 찼습니다');
+    return;
+  }
+  store('cbs:name', name.trim());
+  hostSeatId = E.addPlayer(game, uniqueName(name)).id;
+  dialog.close();
+  commit();
+}
+
 const commands = {
+  ...dock.commands,
   start: () => mutate((g) => E.startHand(g)),
+  share: shareLink,
+  mute: () => {
+    fx.toggleMuted();
+    renderSide();
+  },
+  sit: () =>
+    openDialog(`<h2>나도 앉기</h2>
+      <p class="hint">이 화면에서 내 차례에 바로 베팅합니다.</p>
+      <label class="field"><span>이름</span><input id="sit-name" maxlength="${NAME_LIMIT}" autocomplete="off" value="${esc(load('cbs:name') ?? '')}"></label>
+      <div class="dialog-row">
+        <button class="btn" data-cmd="close">취소</button>
+        <button class="btn primary" data-cmd="sit-save">앉기</button>
+      </div>`),
+  'sit-save': sitDown,
+  log: () =>
+    openDialog(`<h2>기록</h2>
+      <ol class="log-list">${[...game.log].reverse().slice(0, 60).map((x) => `<li>${esc(x.text)}</li>`).join('')}</ol>
+      <button class="btn wide" data-cmd="close">닫기</button>`),
+  transfer: ({ id }) => {
+    const to = Number(document.getElementById('transfer-to').value);
+    if (mutate((g) => E.transferChips(g, Number(id), to, amountOf('#transfer')))) dialog.close();
+  },
   undo,
   abort: () => {
     if (confirm('이번 판을 취소하고 낸 칩을 모두 돌려줄까요?')) mutate((g) => E.abortHand(g));
@@ -525,6 +628,9 @@ const commands = {
     if (!confirm(`${p.name}님을 내보낼까요? 남은 칩은 정산에서 사라집니다.`)) return;
     const conn = conns.get(pid);
     if (mutate((g) => E.removePlayer(g, pid))) {
+      // 되돌리면 접속 정보가 없는 좌석이 살아나므로 이전 기록을 비운다.
+      history.length = 0;
+      if (pid === hostSeatId) hostSeatId = null;
       if (conn) {
         link.send(conn, { t: 'kicked' });
         delete tokens[conn.token];
@@ -570,3 +676,4 @@ document.addEventListener('click', (event) => {
 render();
 link.start();
 keepAwake();
+fx.initAudio();

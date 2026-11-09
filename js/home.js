@@ -59,6 +59,10 @@ createForm.addEventListener('submit', (event) => {
   }
 
   const previous = load(LAST_ROOM);
+  const previousGame = previous && JSON.parse(load(roomKey(previous)) ?? 'null')?.game;
+  if (previousGame?.players.length > 0 && !confirm(`열어 둔 테이블 ${previous}의 칩 기록이 삭제됩니다. 새로 열까요?`)) {
+    return;
+  }
   if (previous) {
     try {
       localStorage.removeItem(roomKey(previous));

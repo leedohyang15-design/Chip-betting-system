@@ -28,6 +28,8 @@ const DENOMINATIONS = [5000, 1000, 500, 100, 50, 10, 5, 1];
 const MAX_COLUMNS = 3;
 const MAX_IN_COLUMN = 7;
 
+export const chipClass = (amount) => `c${DENOMINATIONS.find((value) => value <= amount) ?? 1}`;
+
 export function chipStack(amount) {
   const columns = [];
   let rest = amount;

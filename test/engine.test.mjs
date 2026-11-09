@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createGame, addPlayer, startHand, act, award, legal, rematch, abortHand,
-  removePlayer, totalChips, canRematch, playerOf,
+  removePlayer, totalChips, canRematch, playerOf, transferChips, settlement, rebuy,
 } from '../js/engine.js';
 
 function table(config, stacks) {
@@ -149,7 +149,8 @@ test('섯다: 앤티를 걷고 선부터 삥·따당·하프 금액을 계산한
   assert.equal(g.hand.seats[a].total, 10);
   const first = legal(g, a);
   assert.equal(first.pot, 30);
-  assert.deepEqual(first.presets.map((p) => p.key), ['ping', 'quarter', 'half', 'full']);
+  // 쿼터는 삥과 같은 10이라 하나만 남는다.
+  assert.deepEqual(first.presets.map((p) => p.key), ['ping', 'half', 'full']);
   act(g, a, { type: 'preset', key: 'ping' });
   assert.equal(g.hand.seats[a].last, '삥');
 
@@ -244,6 +245,62 @@ test('판 취소는 낸 칩을 모두 돌려주고 딜러를 되돌린다', () =
   assert.equal(g.hand, null);
   startHand(g);
   assert.equal(g.dealerId, a);
+});
+
+test('입장과 리바이는 베팅 입력의 순번을 바꾸지 않는다', () => {
+  const { g, ids: [a, b] } = table(holdem, [1000, 1000]);
+  startHand(g);
+  const before = g.actionSeq;
+  addPlayer(g, '늦은손님');
+  rebuy(g, b, 500);
+  assert.equal(g.actionSeq, before);
+  act(g, a, { type: 'call' });
+  assert.equal(g.actionSeq, before + 1);
+});
+
+test('나간 사람도 정산에 남아 손익 합계가 0이다', () => {
+  const { g, ids: [a, b, c] } = table(holdem, [1000, 1000, 1000]);
+  startHand(g);
+  removePlayer(g, b);
+  act(g, a, { type: 'fold' });
+  assert.equal(playerOf(g, b), undefined);
+  removePlayer(g, c);
+  const rows = settlement(g);
+  assert.equal(rows.length, 3);
+  assert.equal(rows.reduce((sum, row) => sum + row.net, 0), 0);
+  assert.equal(rows.find((row) => row.name === 'P2').left, true);
+});
+
+test('판 밖의 사람을 내보내도 퇴장 예약자는 판이 끝날 때까지 남는다', () => {
+  const { g, ids: [a, b, c] } = table(holdem, [1000, 1000, 1000]);
+  startHand(g);
+  const waiting = addPlayer(g, '대기');
+  removePlayer(g, b);
+  removePlayer(g, waiting.id);
+  assert.ok(playerOf(g, b), '판이 끝나기 전에는 자리에 있다');
+  assert.equal(toAct(g), a);
+  act(g, a, { type: 'fold' });
+  assert.equal(playerOf(g, b), undefined);
+  assert.equal(chips(g, c), 1005);
+});
+
+test('칩 이동은 총량을 유지하고 베팅 중이나 잔액 초과는 막는다', () => {
+  const { g, ids: [a, b] } = table(holdem, [1000, 1000]);
+  transferChips(g, a, b, 300);
+  assert.deepEqual([chips(g, a), chips(g, b)], [700, 1300]);
+  assert.throws(() => transferChips(g, a, b, 701));
+  assert.throws(() => transferChips(g, a, a, 10));
+  assert.throws(() => transferChips(g, a, b, 0));
+  assert.equal(playerOf(g, a).buyIn, 1000, '바이인은 그대로라 손익에 반영된다');
+  startHand(g);
+  assert.throws(() => transferChips(g, a, b, 10));
+});
+
+test('금액이 같은 베팅 버튼은 하나만 남는다', () => {
+  const { g, ids: [a] } = table(holdem, [1000, 1000]);
+  startHand(g);
+  const amounts = legal(g, a).presets.map((p) => p.to);
+  assert.equal(new Set(amounts).size, amounts.length);
 });
 
 test('무작위 진행에서 칩 총량이 보존되고 판이 항상 끝난다', () => {

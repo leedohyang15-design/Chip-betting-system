@@ -19,8 +19,9 @@ export function createGame(config) {
     handNo: 0,
     dealerId: null,
     lastWinnerId: null,
-    seq: 0,
+    actionSeq: 0, // 베팅 흐름이 바뀔 때만 증가한다. 늦게 도착한 입력을 거르는 데 쓴다.
     nextPlayerId: 1,
+    departed: [],
     log: [],
   };
 }
@@ -59,7 +60,6 @@ export function addPlayer(g, name) {
   };
   g.nextPlayerId += 1;
   g.players.push(player);
-  g.seq += 1;
   addLog(g, `${name} 입장 (${player.chips.toLocaleString()})`);
   return player;
 }
@@ -69,7 +69,6 @@ export function rebuy(g, id, amount) {
   if (!positiveInt(amount) || amount === 0) fail('금액을 확인해 주세요');
   p.chips += amount;
   p.buyIn += amount;
-  g.seq += 1;
   addLog(g, `${p.name} 리바이 +${amount.toLocaleString()}`);
 }
 
@@ -77,35 +76,61 @@ export function setChips(g, id, amount) {
   const p = playerOf(g, id) ?? fail('없는 플레이어입니다');
   if (!positiveInt(amount)) fail('금액을 확인해 주세요');
   p.chips = amount;
-  g.seq += 1;
   addLog(g, `${p.name} 칩 수정 → ${amount.toLocaleString()}`);
+}
+
+export function transferChips(g, fromId, toId, amount) {
+  if (g.hand?.phase === 'betting') fail('베팅이 끝난 뒤에 옮길 수 있습니다');
+  const from = playerOf(g, fromId) ?? fail('없는 플레이어입니다');
+  const to = playerOf(g, toId) ?? fail('받을 사람을 골라 주세요');
+  if (from === to) fail('받을 사람을 골라 주세요');
+  if (!positiveInt(amount) || amount === 0) fail('금액을 확인해 주세요');
+  if (amount > from.chips) fail('가진 칩보다 많이 옮길 수 없습니다');
+  from.chips -= amount;
+  to.chips += amount;
+  addLog(g, `${from.name} → ${to.name} 칩 이동 ${amount.toLocaleString()}`);
 }
 
 export function setSitOut(g, id, sitOut) {
   const p = playerOf(g, id) ?? fail('없는 플레이어입니다');
   p.sitOut = sitOut;
-  g.seq += 1;
   addLog(g, `${p.name} ${sitOut ? '자리비움' : '복귀'}`);
 }
 
 export function removePlayer(g, id) {
   const p = playerOf(g, id) ?? fail('없는 플레이어입니다');
   const h = g.hand;
-  g.seq += 1;
   if (h && h.phase !== 'done' && h.seats[id]) {
     p.leaving = true;
+    g.actionSeq += 1;
     addLog(g, `${p.name} 이번 판 후 퇴장`);
     if (h.phase === 'betting' && !h.seats[id].folded) foldOut(g, id);
     return;
   }
-  g.players = g.players.filter((x) => x.id !== id);
+  depart(g, p);
+}
+
+function depart(g, p) {
+  g.departed.push({ id: p.id, name: p.name, buyIn: p.buyIn, chips: p.chips });
+  g.players = g.players.filter((x) => x !== p);
   addLog(g, `${p.name} 퇴장`);
+}
+
+function dropLeaving(g) {
+  for (const p of g.players.filter((x) => x.leaving)) depart(g, p);
+}
+
+export function settlement(g) {
+  const rows = [
+    ...g.players.map((p) => ({ name: p.name, buyIn: p.buyIn, chips: p.chips, left: false })),
+    ...g.departed.map((p) => ({ name: p.name, buyIn: p.buyIn, chips: p.chips, left: true })),
+  ];
+  return rows.map((row) => ({ ...row, net: row.chips - row.buyIn })).sort((a, b) => b.net - a.net);
 }
 
 export function updateConfig(g, patch) {
   if (g.hand && g.hand.phase !== 'done') fail('판이 끝난 뒤에 바꿀 수 있습니다');
   g.config = { ...g.config, ...patch };
-  g.seq += 1;
 }
 
 /* 판 시작 */
@@ -147,7 +172,7 @@ export function startHand(g, rematch = null) {
   const mode = g.config.mode;
   g.dealerId = chooseDealer(g, players, Boolean(rematch));
   g.handNo += 1;
-  g.seq += 1;
+  g.actionSeq += 1;
 
   const dealerIdx = players.findIndex((p) => p.id === g.dealerId);
   const startIdx = mode === 'holdem' ? dealerIdx + 1 : dealerIdx;
@@ -277,7 +302,10 @@ function buildPresets(g, h, ctx) {
     list.push({ key: 'half', label: '하프', to: byPot(0.5) });
     list.push({ key: 'full', label: '풀', to: byPot(1) });
   }
-  return list.filter((x) => x.to > h.currentBet).map((x) => ({ ...x, pay: x.to - bet }));
+  const seen = new Set();
+  return list
+    .filter((x) => x.to > h.currentBet && !seen.has(x.to) && seen.add(x.to))
+    .map((x) => ({ ...x, pay: x.to - bet }));
 }
 
 export function legal(g, id) {
@@ -380,7 +408,7 @@ export function act(g, id, action) {
   }
 
   s.acted = true;
-  g.seq += 1;
+  g.actionSeq += 1;
   advance(g, id);
 }
 
@@ -518,11 +546,8 @@ function finishIfSettled(g) {
     h.pots[0],
   );
   g.lastWinnerId = main.winners[0];
-  g.seq += 1;
-
-  const leaving = g.players.filter((p) => p.leaving);
-  for (const p of leaving) addLog(g, `${p.name} 퇴장`);
-  g.players = g.players.filter((p) => !p.leaving);
+  g.actionSeq += 1;
+  dropLeaving(g);
 }
 
 export function award(g, potIndex, winnerIds) {
@@ -535,7 +560,7 @@ export function award(g, potIndex, winnerIds) {
   }
   payout(g, pot, winnerIds);
   addLog(g, `${pot.winners.map((id) => nameOf(g, id)).join(', ')} 획득 +${pot.amount.toLocaleString()}`);
-  g.seq += 1;
+  g.actionSeq += 1;
   finishIfSettled(g);
 }
 
@@ -572,8 +597,8 @@ export function abortHand(g) {
   g.dealerId = h.prevDealerId;
   g.handNo -= 1;
   g.hand = null;
-  g.seq += 1;
-  g.players = g.players.filter((p) => !p.leaving);
+  g.actionSeq += 1;
+  dropLeaving(g);
   addLog(g, '판 취소, 칩을 돌려줬습니다');
 }
 
