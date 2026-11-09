@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14110e">
+  <title>칩 베팅</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="home">
+  <main class="home-wrap">
+    <header class="home-head">
+      <div class="logo" aria-hidden="true"><i class="chip c100"></i><i class="chip c500"></i><i class="chip c10"></i></div>
+      <h1>칩 베팅</h1>
+      <p>실물 카드는 그대로, 칩만 휴대폰으로.</p>
+    </header>
+
+    <form id="join-form" class="panel">
+      <h2>테이블 참가</h2>
+      <input id="join-code" class="input-big code-input" maxlength="4" placeholder="방 코드" autocomplete="off" autocapitalize="characters" aria-label="방 코드">
+      <button class="btn primary wide big">참가</button>
+    </form>
+
+    <form id="create-form" class="panel fields" data-mode="holdem">
+      <h2>새 테이블 열기</h2>
+      <div class="seg">
+        <label><input type="radio" name="mode" value="holdem" checked><span>텍사스 홀덤</span></label>
+        <label><input type="radio" name="mode" value="seotda"><span>섯다</span></label>
+      </div>
+      <label class="field"><span>시작 칩</span><input name="stack" type="number" min="1" inputmode="numeric" value="1000"></label>
+      <label class="field only-holdem"><span>스몰 블라인드</span><input name="sb" type="number" min="0" inputmode="numeric" value="5"></label>
+      <label class="field only-holdem"><span>빅 블라인드</span><input name="bb" type="number" min="1" inputmode="numeric" value="10"></label>
+      <label class="field"><span>앤티</span><input name="ante" type="number" min="0" inputmode="numeric" value="0"></label>
+      <label class="field only-seotda"><span>베팅 횟수</span>
+        <select name="rounds"><option value="1">2장 받고 1번</option><option value="2">한 장씩 2번</option></select>
+      </label>
+      <button class="btn wide big">테이블 열기</button>
+      <p class="hint">큰 화면에서 열어 두면 테이블이 되고, 그 브라우저가 서버 역할을 합니다.</p>
+      <a id="resume" class="resume" hidden></a>
+    </form>
+  </main>
+  <script type="module" src="js/home.js"></script>
+</body>
+</html>
