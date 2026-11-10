@@ -3,6 +3,8 @@
 import { esc, fmt } from './ui.js';
 
 const CONFIRM_MS = 2500;
+const TOKEN_ONE = '<i class="token c5"></i>';
+const TOKEN_TWO = '<i class="token c100"></i><i class="token c5 overlap"></i>';
 
 export function createDock({ sheet, getLegal, send, rerender }) {
   let armed = null;
@@ -112,24 +114,24 @@ export function createDock({ sheet, getLegal, send, rerender }) {
     const isHoldem = mode === 'holdem';
     const foldLabel = armed === 'fold' ? '체크 가능! 한 번 더' : isHoldem ? '폴드' : '다이';
     const main = la.canCheck
-      ? `<button class="btn go action" data-cmd="check" ${busy}>체크</button>`
-      : `<button class="btn go action" data-cmd="call" ${busy}>콜<small>${fmt(la.call)}${la.callIsAllIn ? ' 올인' : ''}</small></button>`;
-    const fold = `<button class="btn danger action ${armed === 'fold' ? 'armed' : ''}" data-cmd="fold" ${busy}>${foldLabel}</button>`;
+      ? `<button class="btn go action" data-cmd="check" ${busy}><span class="lbl"><i class="ico-check">✓</i>체크</span></button>`
+      : `<button class="btn go action" data-cmd="call" ${busy}><span class="lbl">${TOKEN_ONE}콜</span><small>${fmt(la.call)}${la.callIsAllIn ? ' 올인' : ''}</small></button>`;
+    const fold = `<button class="btn danger action ${armed === 'fold' ? 'armed' : ''}" data-cmd="fold" ${busy}><span class="lbl"><i class="ico-card"></i>${foldLabel}</span></button>`;
 
     if (isHoldem) {
       const raise = la.canRaise
-        ? `<button class="btn raise action" data-cmd="open-sheet" ${busy}>${la.isOpening ? '벳' : '레이즈'}<small>${fmt(la.minTo)}부터</small></button>`
+        ? `<button class="btn raise action" data-cmd="open-sheet" ${busy}><span class="lbl">${TOKEN_TWO}${la.isOpening ? '벳' : '레이즈'}</span><small>${fmt(la.minTo)}부터</small></button>`
         : '';
       return `<div class="dock-row">${fold}${main}${raise}</div>`;
     }
     const presets = la.presets
       .map(
-        (p) => `<button class="btn raise" data-cmd="preset" data-key="${p.key}" ${busy}>${esc(p.label)}<small>${fmt(p.pay)}</small></button>`,
+        (p) => `<button class="btn raise" data-cmd="preset" data-key="${p.key}" ${busy}><span class="lbl">${TOKEN_ONE}${esc(p.label)}</span><small>${fmt(p.pay)}</small></button>`,
       )
       .join('');
     const allin = la.canRaise
       ? `<button class="btn gold ${armed === 'allin' ? 'armed' : ''}" data-cmd="allin" ${busy}>
-          ${armed === 'allin' ? '한 번 더 누르면 올인' : '올인'}<small>${fmt(la.chips)}</small></button>`
+          <span class="lbl">${TOKEN_TWO}${armed === 'allin' ? '한 번 더!' : '올인'}</span><small>${fmt(la.chips)}</small></button>`
       : '';
     return `<div class="dock-grid">${presets}${allin}</div><div class="dock-row">${fold}${main}</div>`;
   }

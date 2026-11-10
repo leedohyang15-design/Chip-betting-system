@@ -2,7 +2,7 @@ import { createDock } from './dock.js';
 import * as E from './engine.js';
 import * as fx from './fx.js';
 import { HostLink, normalizeRoom } from './net.js';
-import { chipStack, esc, fmt, keepAwake, load, roomKey, signed, store, toast } from './ui.js';
+import { chipStack, esc, fmt, keepAwake, load, place, roomKey, signed, store, toast } from './ui.js';
 
 const HISTORY_LIMIT = 30;
 const NAME_LIMIT = 12;
@@ -188,9 +188,6 @@ const link = new HostLink(room, {
 
 /* 테이블 렌더링 */
 
-const toRad = (deg) => (deg * Math.PI) / 180;
-const place = (angle, rx, ry) =>
-  `left:${(50 + rx * Math.cos(toRad(angle))).toFixed(2)}%;top:${(50 + ry * Math.sin(toRad(angle))).toFixed(2)}%`;
 const RADII = {
   wide: { seat: [45, 43], bet: [28, 25], dealer: [33, 30] },
   tall: { seat: [39, 44], bet: [23, 31], dealer: [27, 36] },
@@ -369,7 +366,10 @@ function idleHtml(g, h) {
     ${summary}
     <button class="btn primary wide big" data-cmd="start" ${ready < 2 ? 'disabled' : ''}>
       ${g.handNo === 0 ? '첫 판 시작' : '다음 판 시작'}</button>
-    ${mySeat() ? '' : '<button class="btn wide" data-cmd="sit">나도 앉기</button>'}
+    <div class="idle-row">
+      ${mySeat() ? '' : '<button class="btn" data-cmd="sit">나도 앉기</button>'}
+      ${g.players.length > 1 ? `<button class="btn" data-cmd="order-open">순서 정하기</button>` : ''}
+    </div>
     ${ready < 2 ? '<p class="hint">칩이 있는 플레이어가 2명 이상 필요합니다.</p>' : ''}
     ${g.handNo === 0 ? '<p class="hint warn">이 화면을 끄거나 다른 앱으로 넘어가면 게임이 멈춥니다.</p>' : ''}`;
 }
@@ -415,6 +415,7 @@ function renderSide() {
     <section class="panel stage">${stage}</section>
     <div class="side-actions">
       <button class="btn" data-cmd="undo" ${history.length ? '' : 'disabled'}>↩ 되돌리기</button>
+      <button class="btn" data-cmd="end-hand" ${h?.phase === 'betting' ? '' : 'disabled'}>판 끝내기</button>
       <button class="btn" data-cmd="abort" ${inHand ? '' : 'disabled'}>판 취소</button>
     </div>
     <section class="panel log"><h3>기록</h3><ol>${log}</ol></section>`;
@@ -444,7 +445,35 @@ function render() {
 
 function openDialog(html) {
   dialog.innerHTML = html;
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
+}
+
+let orderDraft = null;
+
+function paintOrderDialog() {
+  const { ids, dealerId } = orderDraft;
+  const isHoldem = game.config.mode === 'holdem';
+  const role = isHoldem ? '딜러' : '선';
+  const rows = ids
+    .map((id, i) => {
+      const p = E.playerOf(game, id);
+      const canDeal = p.chips > 0 && !p.sitOut;
+      return `<li>
+        <span class="ord-n">${i + 1}</span>
+        <span class="ord-name">${esc(p.name)}</span>
+        <button class="ord-role ${id === dealerId ? 'on' : ''}" data-cmd="order-dealer" data-id="${id}" ${canDeal ? '' : 'disabled'}>${role}</button>
+        <button class="btn ord-move" data-cmd="order-move" data-id="${id}" data-dir="-1" aria-label="${esc(p.name)} 위로" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="btn ord-move" data-cmd="order-move" data-id="${id}" data-dir="1" aria-label="${esc(p.name)} 아래로" ${i === ids.length - 1 ? 'disabled' : ''}>▼</button>
+      </li>`;
+    })
+    .join('');
+  openDialog(`<h2>순서 정하기</h2>
+    <p class="hint">위에서 아래 순서로 시계 방향으로 앉습니다. ${isHoldem ? '딜러 왼쪽부터 베팅합니다.' : '선부터 베팅합니다.'} ${role} 지정은 다음 한 판에 적용됩니다.</p>
+    <ol class="order-list">${rows}</ol>
+    <div class="dialog-row">
+      <button class="btn" data-cmd="close">취소</button>
+      <button class="btn primary" data-cmd="order-save">적용</button>
+    </div>`);
 }
 
 function seatDialog(id) {
@@ -558,6 +587,7 @@ function sitDown() {
 const commands = {
   ...dock.commands,
   start: () => mutate((g) => E.startHand(g)),
+  'end-hand': () => mutate((g) => E.endBetting(g)),
   share: shareLink,
   mute: () => {
     fx.toggleMuted();
@@ -572,6 +602,32 @@ const commands = {
         <button class="btn primary" data-cmd="sit-save">앉기</button>
       </div>`),
   'sit-save': sitDown,
+  'order-open': () => {
+    orderDraft = {
+      ids: [...game.players].sort((a, b) => a.seat - b.seat).map((p) => p.id),
+      dealerId: E.upcomingDealerId(game),
+    };
+    paintOrderDialog();
+  },
+  'order-move': ({ id, dir }) => {
+    const { ids } = orderDraft;
+    const from = ids.indexOf(Number(id));
+    const to = from + Number(dir);
+    [ids[from], ids[to]] = [ids[to], ids[from]];
+    paintOrderDialog();
+  },
+  'order-dealer': ({ id }) => {
+    orderDraft.dealerId = Number(id);
+    paintOrderDialog();
+  },
+  'order-save': () => {
+    const { ids, dealerId } = orderDraft;
+    const saved = mutate((g) => {
+      E.reorderSeats(g, ids);
+      if (dealerId !== null) E.setNextDealer(g, dealerId);
+    });
+    if (saved) dialog.close();
+  },
   log: () =>
     openDialog(`<h2>기록</h2>
       <ol class="log-list">${[...game.log].reverse().slice(0, 60).map((x) => `<li>${esc(x.text)}</li>`).join('')}</ol>

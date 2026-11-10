@@ -93,7 +93,7 @@ export function capture(root) {
   const map = (selector) =>
     Object.fromEntries([...root.querySelectorAll(selector)].map((el) => [el.dataset.id, centerOf(el)]));
   const pot = root.querySelector('.pot');
-  return { seats: map('.seat'), bets: map('.bet'), pot: pot ? centerOf(pot) : null };
+  return { seats: map('.seat, [data-seat]'), bets: map('.bet'), pot: pot ? centerOf(pot) : null };
 }
 
 function flyChip(from, to, cls, delay) {
@@ -118,7 +118,9 @@ function burst(from, to, amount, delay = 0) {
   for (let i = 0; i < CHIPS_PER_FLIGHT; i += 1) flyChip(from, to, chipClass(amount), delay + i * 55);
 }
 
-function playNewHand(after, next) {
+const NO_SOUND = { chip() {}, card() {}, win() {} };
+
+function playNewHand(after, next, sfx) {
   let moved = false;
   for (const id of next.order) {
     if (next.seats[id].bet > 0) {
@@ -126,10 +128,10 @@ function playNewHand(after, next) {
       moved = true;
     }
   }
-  if (moved) sound.chip();
+  if (moved) sfx.chip();
 }
 
-function playSameHand(before, after, prev, next) {
+function playSameHand(before, after, prev, next, sfx) {
   const closed = next.street !== prev.street || (prev.phase === 'betting' && next.phase !== 'betting');
   let moved = false;
   for (const id of next.order) {
@@ -143,8 +145,8 @@ function playSameHand(before, after, prev, next) {
       moved = true;
     }
   }
-  if (moved) sound.chip();
-  if (next.mode === 'holdem' && next.street > prev.street) sound.card();
+  if (moved) sfx.chip();
+  if (next.mode === 'holdem' && next.street > prev.street) sfx.card();
 
   let won = false;
   const delay = closed ? COLLECT_DELAY_MS : 0;
@@ -153,14 +155,16 @@ function playSameHand(before, after, prev, next) {
     for (const [id, amount] of Object.entries(pot.payouts)) burst(after.pot, after.seats[id], amount, delay);
     won = true;
   });
-  if (won) setTimeout(sound.win, delay);
+  if (won) setTimeout(sfx.win, delay);
 }
 
 // prev가 undefined면 첫 렌더링이나 되돌리기라서 연출하지 않는다.
-export function play(root, before, prev, next) {
+// 휴대폰 여러 대가 같은 소리를 동시에 내지 않도록 플레이어 화면은 silent로 부른다.
+export function play(root, before, prev, next, { silent = false } = {}) {
   if (prev === undefined || !next) return;
   const animate = !reduceMotion.matches && !document.hidden;
   const after = animate ? capture(root) : { seats: {}, bets: {}, pot: null };
-  if (prev?.no !== next.no) playNewHand(after, next);
-  else if (JSON.stringify(prev) !== JSON.stringify(next)) playSameHand(before, after, prev, next);
+  const sfx = silent ? NO_SOUND : sound;
+  if (prev?.no !== next.no) playNewHand(after, next, sfx);
+  else if (JSON.stringify(prev) !== JSON.stringify(next)) playSameHand(before, after, prev, next, sfx);
 }

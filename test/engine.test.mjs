@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createGame, addPlayer, startHand, act, award, legal, rematch, abortHand,
   removePlayer, totalChips, canRematch, playerOf, transferChips, settlement, rebuy,
+  reorderSeats, setNextDealer, upcomingDealerId, endBetting,
 } from '../js/engine.js';
 
 function table(config, stacks) {
@@ -294,6 +295,59 @@ test('칩 이동은 총량을 유지하고 베팅 중이나 잔액 초과는 막
   assert.equal(playerOf(g, a).buyIn, 1000, '바이인은 그대로라 손익에 반영된다');
   startHand(g);
   assert.throws(() => transferChips(g, a, b, 10));
+});
+
+test('관리자가 정한 자리 순서와 딜러로 판이 진행되고 그다음은 다시 돈다', () => {
+  const { g, ids: [a, b, c] } = table(holdem, [1000, 1000, 1000]);
+  reorderSeats(g, [c, a, b]);
+  setNextDealer(g, a);
+  assert.equal(upcomingDealerId(g), a);
+  startHand(g); // 시계 방향 c, a, b에서 딜러 a → SB b, BB c, 선공 a
+  assert.equal(g.dealerId, a);
+  assert.equal(g.hand.sbId, b);
+  assert.equal(g.hand.bbId, c);
+  act(g, a, { type: 'fold' });
+  act(g, b, { type: 'fold' });
+  assert.equal(upcomingDealerId(g), b, '지정은 한 판만 적용된다');
+});
+
+test('섯다는 지정한 사람이 직전 승자 대신 선이 된다', () => {
+  const { g, ids: [a, b, c] } = table(seotda, [100, 100, 100]);
+  startHand(g);
+  act(g, a, { type: 'check' });
+  act(g, b, { type: 'check' });
+  act(g, c, { type: 'check' });
+  award(g, 0, [c]);
+  assert.equal(upcomingDealerId(g), c);
+  setNextDealer(g, b);
+  startHand(g);
+  assert.equal(g.dealerId, b);
+  assert.equal(toAct(g), b);
+});
+
+test('판 중에는 순서를 바꿀 수 없고, 판을 취소하면 지정이 유지된다', () => {
+  const { g, ids: [a, b, c] } = table(holdem, [1000, 1000, 1000]);
+  assert.throws(() => reorderSeats(g, [a, b]));
+  setNextDealer(g, c);
+  startHand(g);
+  assert.throws(() => reorderSeats(g, [c, b, a]));
+  assert.throws(() => setNextDealer(g, a));
+  abortHand(g);
+  assert.equal(upcomingDealerId(g), c);
+});
+
+test('판 끝내기는 승자 선택으로 넘어가고 콜되지 않은 금액은 돌려준다', () => {
+  const { g, ids: [a, b, c] } = table(holdem, [1000, 1000, 1000]);
+  startHand(g); // 딜러 a, SB b(5), BB c(10)
+  act(g, a, { type: 'raise', to: 100 });
+  endBetting(g);
+  assert.equal(g.hand.phase, 'showdown');
+  assert.equal(g.hand.toAct, null);
+  assert.equal(chips(g, a), 990, '10을 넘게 올린 90은 돌려받는다');
+  // SB는 5만 냈으므로 메인 15에만 권리가 있고, 나머지 10은 a와 c의 사이드 팟이다.
+  assert.deepEqual(g.hand.pots.filter((pot) => !pot.winners).map((pot) => pot.amount), [15, 10]);
+  assert.equal(totalChips(g), 3000);
+  assert.throws(() => endBetting(g));
 });
 
 test('금액이 같은 베팅 버튼은 하나만 남는다', () => {

@@ -1,12 +1,14 @@
 import { createDock } from './dock.js';
-import { initAudio, isMuted, sound, toggleMuted } from './fx.js';
+import { capture, initAudio, isMuted, play, sound, toggleMuted } from './fx.js';
 import { ClientLink, normalizeRoom } from './net.js';
-import { chipStack, esc, fmt, keepAwake, load, signed, store, toast } from './ui.js';
+import { chipPile, chipStack, esc, fmt, keepAwake, load, place, signed, store, toast } from './ui.js';
 
 const HELP_MS = 12000;
 const ACK_TIMEOUT_MS = 4000;
 const FLASH_MS = 800;
-const FEED_LENGTH = 4;
+const RADII = { seat: [39, 41], bet: [23, 23], dealer: [29, 30] };
+const BOARD_CARDS = [0, 3, 4, 5];
+const DECOR_PILE = 1650;
 
 const params = new URLSearchParams(location.search);
 const room = normalizeRoom(params.get('room'));
@@ -26,6 +28,8 @@ let helpTimer = null;
 let showHelp = false;
 let seatsFull = false;
 let kicked = false;
+let prevHand;
+let dealtCards = 0;
 
 let token = load(tokenKey);
 if (room.length !== 4) location.replace('index.html');
@@ -110,6 +114,7 @@ function sendAction(action) {
   const seq = view.seq;
   sentSeq = seq;
   link.send({ t: 'act', seq, action });
+  if (action.type !== 'fold' && action.type !== 'check') sound.chip();
   render();
   // 전송이 유실되면 다시 누를 수 있게 잠금을 푼다. 중복 입력은 관리자가 순번으로 거른다.
   setTimeout(() => {
@@ -150,6 +155,7 @@ function renderJoin() {
   if (!document.getElementById('name-form')) {
     const previous = esc(load(NAME_KEY) ?? '');
     app.innerHTML = `<form class="p-center" id="name-form">
+      <div class="join-pile" aria-hidden="true">${chipPile(DECOR_PILE)}</div>
       <p class="eyebrow">테이블 ${room}</p>
       <h1>${seatsFull ? '자리가 모두 찼습니다' : '이름을 입력하세요'}</h1>
       ${seatsFull ? '<p class="hint">자리가 나면 다시 입장해 주세요.</p>' : ''}
@@ -168,29 +174,104 @@ function renderJoin() {
   document.getElementById('join-help').innerHTML = showHelp ? HELP_HTML : '';
 }
 
-function othersHtml(me) {
+function wonAmounts(h) {
+  const won = {};
+  if (h?.phase !== 'done') return won;
+  for (const pot of h.pots) {
+    for (const [id, amount] of Object.entries(pot.payouts ?? {})) won[id] = (won[id] ?? 0) + amount;
+  }
+  return won;
+}
+
+function seatHtml(p, angle, won) {
   const h = view.hand;
-  return view.players
-    .slice()
-    .sort((a, b) => a.seat - b.seat)
-    .filter((p) => p.id !== me.id)
-    .map((p) => {
-      const s = h?.seats[p.id];
-      const turn = h?.toAct === p.id;
-      let note = '';
-      if (p.sitOut) note = '자리비움';
-      else if (s?.folded) note = s.last;
-      else if (s?.allIn) note = '올인';
-      else if (s?.last && h.phase !== 'done') note = s.last;
-      const bet = s?.bet > 0 && h.phase === 'betting' ? fmt(s.bet) : '';
-      return `<li class="${turn ? 'turn' : ''} ${s?.folded ? 'folded' : ''} ${p.connected ? '' : 'offline'}">
-        <span class="o-name"><i class="dot"></i>${esc(p.name)}</span>
-        <span class="o-note">${esc(note)}</span>
-        <span class="o-bet">${bet}</span>
-        <span class="o-chips">${fmt(p.chips)}</span>
-      </li>`;
-    })
-    .join('');
+  const s = h?.seats[p.id];
+  const classes = ['seat'];
+  if (h && h.phase !== 'done' && !s) classes.push('out');
+  if (s?.folded) classes.push('folded');
+  if (s?.allIn && !s.folded) classes.push('allin');
+  if (h?.toAct === p.id) classes.push('turn');
+  if (!p.connected) classes.push('offline');
+  if (p.sitOut) classes.push('sitout');
+  if (won[p.id]) classes.push('winner');
+
+  let tag = '';
+  if (won[p.id]) tag = `+${fmt(won[p.id])}`;
+  else if (p.sitOut) tag = '자리비움';
+  else if (s?.last && h.phase !== 'done') tag = s.last;
+  const cards = s && !s.folded && h.phase !== 'done' ? '<span class="minis"><i></i><i></i></span>' : '';
+  const sun = view.config.mode === 'seotda' && view.dealerId === p.id ? '<span class="badge sun">선</span>' : '';
+
+  return `<div class="${classes.join(' ')}" style="${place(angle, ...RADII.seat)}" data-id="${p.id}">
+    ${cards}
+    <span class="seat-name"><i class="dot"></i>${esc(p.name)}${sun}</span>
+    <span class="seat-chips"><i class="token c5"></i>${fmt(p.chips)}</span>
+    ${tag ? `<span class="seat-tag">${esc(tag)}</span>` : ''}
+  </div>`;
+}
+
+function potAmount(h) {
+  if (!h) return 0;
+  if (h.phase === 'betting') return h.carry + Object.values(h.seats).reduce((sum, s) => sum + s.total, 0);
+  return h.pots.filter((pot) => !pot.winners).reduce((sum, pot) => sum + pot.amount, 0);
+}
+
+function centerHtml(stage, pot) {
+  const h = view.hand;
+  let board = '';
+  if (h?.mode === 'holdem') {
+    const shown = BOARD_CARDS[h.street];
+    board = `<div class="board">${[0, 1, 2, 3, 4]
+      .map((i) => `<i class="card ${i < shown ? 'dealt' : ''} ${i < shown && i >= dealtCards ? 'flip' : ''}"></i>`)
+      .join('')}</div>`;
+    dealtCards = h.phase === 'done' ? 0 : shown;
+  }
+  return `<div class="center-stack">
+    <p class="street">${esc(stage)}</p>
+    ${board}
+    <div class="pot">${chipPile(pot || DECOR_PILE)}${pot ? `<b>${fmt(pot)}</b>` : ''}</div>
+  </div>`;
+}
+
+function tableHtml(me, stage, pot) {
+  const h = view.hand;
+  const sorted = [...view.players].sort((a, b) => a.seat - b.seat);
+  const myIndex = sorted.findIndex((p) => p.id === me.id);
+  const step = 360 / sorted.length;
+  const won = wonAmounts(h);
+
+  const pieces = sorted.map((_, k) => {
+    const p = sorted[(myIndex + k) % sorted.length];
+    const angle = 90 + k * step; // 내 자리가 맨 아래, 나머지는 시계 방향
+    let html = k === 0 ? '' : seatHtml(p, angle, won);
+    const bet = h?.phase === 'betting' ? h.seats[p.id]?.bet ?? 0 : 0;
+    if (bet > 0) {
+      html += `<div class="bet" data-id="${p.id}" style="${place(angle, ...RADII.bet)}">${chipStack(bet)}<b>${fmt(bet)}</b></div>`;
+    }
+    if (h?.mode === 'holdem' && view.dealerId === p.id) {
+      html += `<div class="dealer" style="${place(angle + 14, ...RADII.dealer)}">D</div>`;
+    }
+    return html;
+  });
+
+  return `<div class="table"><div class="rail"><div class="felt">${centerHtml(stage, pot)}</div></div>${pieces.join('')}</div>`;
+}
+
+function myPanelHtml(me) {
+  const h = view.hand;
+  const s = h?.seats[me.id];
+  const isDealer = view.dealerId === me.id;
+  const role = isDealer ? (view.config.mode === 'holdem' ? '딜러' : '선') : h?.sbId === me.id ? 'SB' : h?.bbId === me.id ? 'BB' : '';
+  const inHand = s && h.phase !== 'done';
+  const state = s?.folded ? s.last : s?.allIn ? '올인' : '';
+  return `<section class="p-me ${s?.folded ? 'folded' : ''}" data-seat data-id="${me.id}">
+    ${inHand ? '<div class="my-cards" aria-hidden="true"><i></i><i></i></div>' : ''}
+    <div class="my-info">
+      <small>${esc(me.name)}${role ? ` <em>${role}</em>` : ''}${state && inHand ? ` <em class="bad">${esc(state)}</em>` : ''}</small>
+      <b>${fmt(me.chips)}</b>
+    </div>
+    <div class="my-pile" aria-hidden="true">${chipPile(me.chips)}</div>
+  </section>`;
 }
 
 function netOfHand(h, id) {
@@ -213,7 +294,7 @@ function dockHtml(me) {
   if (h.phase === 'done') {
     if (!s) return benched;
     const net = netOfHand(h, me.id);
-    return `<p class="dock-result ${net > 0 ? 'plus' : net < 0 ? 'minus' : ''}">${signed(net)}</p>
+    return `<p class="dock-result ${net > 0 ? 'plus' : net < 0 ? 'minus' : ''}">${net > 0 ? '<i class="token c1000"></i>' : ''}${signed(net)}</p>
       <p class="dock-wait small">다음 판을 기다리는 중</p>`;
   }
   if (!s) return benched;
@@ -243,37 +324,29 @@ function renderGame() {
   const me = view.players.find((p) => p.id === view.you);
   if (!me) return;
   const h = view.hand;
-  const s = h?.seats[me.id];
   const myTurn = Boolean(view.legal);
   announce(me, myTurn);
   if (!myTurn) dock.close();
   document.body.classList.toggle('my-turn', myTurn);
 
-  const pot = h ? (h.phase === 'betting' ? h.carry + Object.values(h.seats).reduce((a, x) => a + x.total, 0)
-    : h.pots.filter((x) => !x.winners).reduce((a, x) => a + x.amount, 0)) : 0;
   const stage = !h ? '대기 중' : h.phase === 'done' ? '판 종료' : h.phase === 'showdown' ? '쇼다운' : h.streetNames[h.street];
-  const isDealer = view.dealerId === me.id;
-  const role = isDealer ? (view.config.mode === 'holdem' ? '딜러' : '선') : h?.sbId === me.id ? 'SB' : h?.bbId === me.id ? 'BB' : '';
-  const feed = view.log.slice(-FEED_LENGTH).reverse().map((x) => `<li>${esc(x.text)}</li>`).join('');
+  const latest = view.log[view.log.length - 1]?.text ?? '';
+  const before = capture(app);
 
   app.innerHTML = `
     ${status === 'online' ? '' : `<div class="p-offline">재연결 중… 버튼이 잠시 잠깁니다${showHelp ? HELP_HTML : ''}</div>`}
     <header class="p-top">
       <span class="p-room">${room}</span>
-      <span class="p-stage">${esc(stage)}</span>
+      <span class="p-ticker">${esc(latest)}</span>
       <button class="mute" data-cmd="mute" aria-label="${isMuted() ? '소리 켜기' : '소리 끄기'}">${isMuted() ? '🔇' : '🔊'}</button>
-      <span class="net ${status === 'online' ? 'on' : 'wait'}"><i class="dot"></i>${esc(STATUS_TEXT[status])}</span>
+      <i class="dot ${status === 'online' ? '' : 'wait'}" role="img" aria-label="${esc(STATUS_TEXT[status])}"></i>
     </header>
-    <section class="p-pot"><small>팟</small><b>${fmt(pot)}</b></section>
-    <div class="p-mid">
-      <ul class="p-others">${othersHtml(me)}</ul>
-      <ol class="p-feed">${feed}</ol>
-    </div>
-    <section class="p-me">
-      <div><small>${esc(me.name)}${role ? ` · ${role}` : ''}</small><b>${fmt(me.chips)}</b></div>
-      ${s?.bet > 0 && h.phase === 'betting' ? `<div class="p-mybet">${chipStack(s.bet)}<span>${fmt(s.bet)}</span></div>` : ''}
-    </section>
+    <section class="p-table">${tableHtml(me, stage, potAmount(h))}</section>
+    ${myPanelHtml(me)}
     <section class="p-dock">${dockHtml(me)}</section>`;
+
+  play(app, before, prevHand, h, { silent: true });
+  prevHand = h;
 }
 
 function render() {

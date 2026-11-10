@@ -48,6 +48,28 @@ export function chipStack(amount) {
     .join('')}</span>`;
 }
 
+const PILE_MAX_CHIPS = 18;
+
+// 내 칩과 팟처럼 크게 보여 줄 더미. 금액을 정확히 나누기보다 많고 적음이 눈에 보이게 만든다.
+export function chipPile(amount) {
+  if (amount <= 0) return '';
+  const start = Math.max(0, DENOMINATIONS.findIndex((value) => amount / value >= 8));
+  const count = Math.min(PILE_MAX_CHIPS, Math.max(3, Math.ceil(amount / DENOMINATIONS[start])));
+  const heights = [Math.ceil(count * 0.5), Math.ceil(count * 0.3)];
+  heights.push(Math.max(0, count - heights[0] - heights[1]));
+  return `<span class="stack">${heights
+    .map((height, i) => {
+      const value = DENOMINATIONS[Math.min(start + i, DENOMINATIONS.length - 1)];
+      return `<span class="col">${`<i class="chip c${value}"></i>`.repeat(height)}</span>`;
+    })
+    .join('')}</span>`;
+}
+
+const toRad = (deg) => (deg * Math.PI) / 180;
+
+export const place = (angle, rx, ry) =>
+  `left:${(50 + rx * Math.cos(toRad(angle))).toFixed(2)}%;top:${(50 + ry * Math.sin(toRad(angle))).toFixed(2)}%`;
+
 let toastTimer;
 export function toast(message) {
   let el = document.getElementById('toast');

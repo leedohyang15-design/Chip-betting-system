@@ -19,6 +19,7 @@ export function createGame(config) {
     handNo: 0,
     dealerId: null,
     lastWinnerId: null,
+    nextDealerId: null, // 관리자가 지정한 다음 판의 딜러(선)
     actionSeq: 0, // 베팅 흐름이 바뀔 때만 증가한다. 늦게 도착한 입력을 거르는 데 쓴다.
     nextPlayerId: 1,
     departed: [],
@@ -128,6 +129,28 @@ export function settlement(g) {
   return rows.map((row) => ({ ...row, net: row.chips - row.buyIn })).sort((a, b) => b.net - a.net);
 }
 
+export function reorderSeats(g, ids) {
+  if (g.hand && g.hand.phase !== 'done') fail('판이 끝난 뒤에 바꿀 수 있습니다');
+  const sameMembers = ids.length === g.players.length && g.players.every((p) => ids.includes(p.id));
+  if (!sameMembers) fail('입장한 사람이 바뀌었습니다. 다시 열어 주세요');
+  ids.forEach((id, i) => {
+    playerOf(g, id).seat = i;
+  });
+  addLog(g, '자리 순서 변경');
+}
+
+export function setNextDealer(g, id) {
+  if (g.hand && g.hand.phase !== 'done') fail('판이 끝난 뒤에 바꿀 수 있습니다');
+  const p = playerOf(g, id) ?? fail('없는 플레이어입니다');
+  g.nextDealerId = id;
+  addLog(g, `다음 판 ${g.config.mode === 'holdem' ? '딜러' : '선'}: ${p.name}`);
+}
+
+export function upcomingDealerId(g) {
+  const ready = [...g.players].sort(bySeat).filter((p) => p.chips > 0 && !p.sitOut && !p.leaving);
+  return ready.length > 0 ? chooseDealer(g, ready, false) : null;
+}
+
 export function updateConfig(g, patch) {
   if (g.hand && g.hand.phase !== 'done') fail('판이 끝난 뒤에 바꿀 수 있습니다');
   g.config = { ...g.config, ...patch };
@@ -143,6 +166,7 @@ function nextDealer(g, players) {
 
 function chooseDealer(g, players, isRematch) {
   const inGame = (id) => players.some((p) => p.id === id);
+  if (!isRematch && inGame(g.nextDealerId)) return g.nextDealerId;
   if (g.config.mode === 'holdem') return nextDealer(g, players);
   if (isRematch && inGame(g.dealerId)) return g.dealerId;
   if (inGame(g.lastWinnerId)) return g.lastWinnerId;
@@ -170,7 +194,9 @@ export function startHand(g, rematch = null) {
 
   const prevDealerId = g.dealerId;
   const mode = g.config.mode;
+  const forcedDealerId = rematch ? null : g.nextDealerId ?? null;
   g.dealerId = chooseDealer(g, players, Boolean(rematch));
+  if (!rematch) g.nextDealerId = null;
   g.handNo += 1;
   g.actionSeq += 1;
 
@@ -216,6 +242,7 @@ export function startHand(g, rematch = null) {
     isRematch: Boolean(rematch),
     runout: false,
     prevDealerId,
+    forcedDealerId,
   };
   g.hand = h;
   addLog(g, `— ${g.handNo}번째 판${rematch ? ' (재경기)' : ''} 시작 —`);
@@ -564,6 +591,14 @@ export function award(g, potIndex, winnerIds) {
   finishIfSettled(g);
 }
 
+// 남은 베팅을 건너뛰고 승자 선택으로 넘어간다. 콜되지 않은 금액은 팟 계산에서 돌려받는다.
+export function endBetting(g) {
+  if (g.hand?.phase !== 'betting') fail('베팅 중일 때만 끝낼 수 있습니다');
+  g.actionSeq += 1;
+  addLog(g, '관리자가 베팅을 끝냈습니다');
+  goShowdown(g);
+}
+
 export function canRematch(g) {
   const h = g.hand;
   return Boolean(
@@ -595,6 +630,7 @@ export function abortHand(g) {
     playerOf(g, id).chips += h.seats[id].total + share + extra - (paid[id] ?? 0);
   }
   g.dealerId = h.prevDealerId;
+  if (!h.isRematch) g.nextDealerId = h.forcedDealerId;
   g.handNo -= 1;
   g.hand = null;
   g.actionSeq += 1;
