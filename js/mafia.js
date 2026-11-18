@@ -321,10 +321,10 @@ function startHost(saved) {
 
   const hostParts = {
     invite: () => `<div class="panel"><div class="invite">
-        <div class="qr" aria-label="참가 QR 코드">${qrSvg}</div>
+        <button class="qr" data-h="qr" aria-label="QR 크게 보기">${qrSvg}</button>
         <div><p class="muted">방 코드</p><div class="room-code">${room}</div>
         <button class="small" data-h="share">참가 링크 보내기</button></div>
-      </div><p class="muted">QR을 찍거나 링크를 받아 열고 이름만 넣으면 들어와요.</p></div>`,
+      </div><p class="muted">QR을 누르면 크게 보여요. 카메라로 찍거나 링크를 받아 열고 이름만 넣으면 들어와요.</p></div>`,
     roster: () => `<ul class="list">${game.players
       .map((p) => `<li><span><i class="dot ${online(p.id) ? 'on' : 'off'}"></i> ${esc(p.name)}${p.id === hostId ? ' <span class="chip">방장</span>' : ''}</span>${
         p.id === hostId ? '' : `<button class="ghost small" data-h="kick" data-id="${esc(p.id)}">내보내기</button>`
@@ -363,6 +363,14 @@ function startHost(saved) {
 
   const commands = {
     share,
+    qr: () => {
+      const layer = document.createElement('div');
+      layer.className = 'qr-full';
+      layer.setAttribute('role', 'dialog');
+      layer.innerHTML = `<div class="qr-box">${qrSvg}</div><div class="room-code">${room}</div><p>카메라로 찍으면 바로 참가해요</p><button>닫기</button>`;
+      layer.addEventListener('click', () => layer.remove());
+      document.body.append(layer);
+    },
     start: () => mutate((g) => E.start(g)),
     vote: () => mutate((g) => E.startVote(g)),
     night: () => mutate((g) => E.toNight(g)),
